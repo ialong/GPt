@@ -24,7 +24,7 @@ from gpflow import transforms as gtf
 import gpflow.multioutput.kernels as mk
 import gpflow.multioutput.features as mf
 from gpflow.logdensities import mvn_logp, diag_mvn_logp
-from GPt.KL import KL
+from .KL import KL
 
 
 class BaseGaussianTransitions(gp.Parameterized):

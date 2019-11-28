@@ -20,10 +20,10 @@ import gpflow as gp
 from gpflow import settings, params_as_tensors, autoflow
 from gpflow import transforms as gtf
 from gpflow.logdensities import mvn_logp, sum_mvn_logp, diag_mvn_logp
-from GPt.transitions import GPTransitions
-from GPt.emissions import GaussianEmissions
-from GPt.utils import extract_cov_blocks
-from GPt.KL import KL
+from .transitions import GPTransitions
+from .emissions import GaussianEmissions
+from .utils import extract_cov_blocks
+from .KL import KL
 
 
 class SSM(gp.models.Model):

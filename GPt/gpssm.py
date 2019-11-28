@@ -29,8 +29,8 @@ from gpflow import settings as gps
 import gpflow.multioutput.kernels as mk
 import gpflow.multioutput.features as mf
 
-from GPt.KL import KL, KL_samples
-from GPt.emissions import GaussianEmissions
+from .KL import KL, KL_samples
+from .emissions import GaussianEmissions
 
 
 class GPSSM(gp.models.Model):

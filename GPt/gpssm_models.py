@@ -16,10 +16,10 @@
 import tensorflow as tf
 from gpflow import params_as_tensors
 from gpflow import settings as gps
-from GPt.gpssm import GPSSM
-from GPt.gpssm_multiseq import GPSSM_MultipleSequences
-from GPt.ssm import SSM_SG, SSM_SG_MultipleSequences
-from GPt.transitions import GPTransitions
+from .gpssm import GPSSM
+from .gpssm_multiseq import GPSSM_MultipleSequences
+from .ssm import SSM_SG, SSM_SG_MultipleSequences
+from .transitions import GPTransitions
 
 
 class GPSSM_VCDT(GPSSM):

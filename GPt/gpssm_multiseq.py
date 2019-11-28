@@ -18,8 +18,8 @@ import tensorflow as tf
 import gpflow as gp
 from gpflow import Param, ParamList, params_as_tensors
 from gpflow import transforms as gtf
-from GPt.KL import KL, KL_samples
-from GPt.gpssm import GPSSM
+from .KL import KL, KL_samples
+from .gpssm import GPSSM
 
 
 class GPSSM_MultipleSequences(GPSSM):
