@@ -239,7 +239,7 @@ class GPSSM(gp.models.Model):
 
     @params_as_tensors
     def _build_linear_time_q_sample(self, return_f_moments=False, return_x_cov_chols=False,
-                                    sample_f=False, sample_u=True, return_u=False,
+                                    sample_f=False, sample_u=True, return_u=False, x_cov_is_s=False,
                                     T=None, inputs=None, qx1_mu=None, qx1_cov_chol=None, x1_samples=None,
                                     As=None, bs=None, S_chols=None, Lm=None):
         T = self.T if T is None else T
@@ -316,6 +316,9 @@ class GPSSM(gp.models.Model):
                 f_t = f_mu + tf.sqrt(f_var) * white_samples_F[t]  # n_samples x latent_dim
                 F = F.write(t, f_t)
                 f_mu_or_t = f_t
+                x_cov_chol = S_chols[t]
+            elif x_cov_is_s:
+                f_mu_or_t = f_mu
                 x_cov_chol = S_chols[t]
             else:
                 f_mu_or_t = f_mu
