@@ -239,7 +239,7 @@ class GPSSM(gp.models.Model):
 
     @params_as_tensors
     def _build_linear_time_q_sample(self, return_f_moments=False, return_x_cov_chols=False,
-                                    sample_f=False, sample_u=True, return_u=False, x_cov_is_s=False,
+                                    sample_f=False, sample_u=True, return_u=False,
                                     T=None, inputs=None, qx1_mu=None, qx1_cov_chol=None, x1_samples=None,
                                     As=None, bs=None, S_chols=None, Lm=None):
         T = self.T if T is None else T
@@ -266,7 +266,7 @@ class GPSSM(gp.models.Model):
             f_vars = tf.TensorArray(size=T - 1, dtype=gps.float_type, clear_after_read=False,
                                     infer_shape=False, element_shape=(n_samples, self.latent_dim))
 
-        is_diag_xcov = (S_chols.shape.ndims == 2) if (sample_f or x_cov_is_s) else \
+        is_diag_xcov = (S_chols.shape.ndims == 2) if sample_f else \
             ((S_chols.shape.ndims == 2) and (As.shape.ndims == 2))
 
         if return_x_cov_chols:
@@ -316,10 +316,6 @@ class GPSSM(gp.models.Model):
                 f_t = f_mu + tf.sqrt(f_var) * white_samples_F[t]  # n_samples x latent_dim
                 F = F.write(t, f_t)
                 f_mu_or_t = f_t
-                tiling = [n_samples, 1] if is_diag_xcov else [n_samples, 1, 1]
-                x_cov_chol = tf.tile(S_chols[t][None, ...], tiling)
-            elif x_cov_is_s:
-                f_mu_or_t = f_mu
                 tiling = [n_samples, 1] if is_diag_xcov else [n_samples, 1, 1]
                 x_cov_chol = tf.tile(S_chols[t][None, ...], tiling)
             else:
