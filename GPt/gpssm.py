@@ -238,8 +238,70 @@ class GPSSM(gp.models.Model):
         return KL_samples(mu_diff, S_chols, P_chol=self.Q_sqrt)
 
     @params_as_tensors
+    def _build_transition_KLs_X_and_F(self, f_mus, f_vars, KL_F, As=None, bs=None, S_chols=None):
+        KL_X = self._build_transition_KLs(f_mus, f_vars, As=As, bs=bs, S_chols=S_chols)
+        KL_F_avg = tf.reduce_mean(KL_F, -1)
+        return KL_X + KL_F_avg  # T - 1
+
+    @params_as_tensors
+    def _build_KL_F_joint(self, X, F, U, Lm, inputs=None):
+        T = tf.shape(X)[0]
+        n_samples = tf.shape(X)[1]
+        shared_kern = isinstance(self.kern, mk.SharedIndependentMok)
+        shared_kern_and_Z = shared_kern and isinstance(self.Z, mf.SharedIndependentMof)
+
+        X_tr = tf.transpose(X[:-1], [1, 0, 2])  # n_samples x (T-1) x latent_dim
+        if inputs is not None:
+            X_tr = tf.concat([X_tr, tf.tile(inputs[None, :, :], [n_samples, 1, 1])], -1)
+        F_tr = tf.transpose(F, [1, 0, 2])  # n_samples x (T-1) x latent_dim
+        U_tr = tf.transpose(U, [2, 0, 1])[..., None]  # n_samples x latent_dim x M x 1
+
+        n_mean_inputs = self.mean_fn.input_dim if hasattr(self.mean_fn, "input_dim") else self.latent_dim
+        mean_fn_X = self.mean_fn(tf.reshape(X_tr, [-1, self.latent_dim + self.input_dim])[:, :n_mean_inputs])
+        mean_fn_X = tf.reshape(mean_fn_X, [n_samples, T - 1, self.latent_dim])  # n_samples x (T-1) x latent_dim
+        K_fn = lambda x: self.kern.kern.K(x) if shared_kern else lambda x: self.kern.K(x, full_output_cov=False)
+        Kxx = tf.map_fn(K_fn, X_tr)  # n_samples x (latent_dim x) (T-1) x (T-1)
+
+        # (latent_dim x) M x n_samples*(T-1):
+        Kzx = Kuf(self.Z, self.kern, tf.reshape(X_tr, [-1, self.latent_dim + self.input_dim]))
+        Kzx_shape = [self.n_ind_pts, n_samples, T - 1]
+        Kzx = tf.reshape(Kzx, Kzx_shape if shared_kern_and_Z else [self.latent_dim] + Kzx_shape)
+        # n_samples x (latent_dim x) M x (T-1):
+        Kzx = tf.transpose(Kzx, [1, 0, 2] if shared_kern_and_Z else [2, 0, 1, 3])
+
+        _Lm = tf.tile(Lm[None, ...], [n_samples, 1, 1] if shared_kern_and_Z else [n_samples, 1, 1, 1])
+        LinvK = tf.linalg.triangular_solve(_Lm, Kzx, lower=True)  # n_samples x (latent_dim x) M x (T-1)
+
+        _Kxx = Kxx[:, None, :, :] if (shared_kern and not shared_kern_and_Z) else Kxx
+        Cov_p = _Kxx - tf.matmul(LinvK, LinvK, transpose_a=True)  # n_samples (x latent_dim) x (T-1) x (T-1)
+        Cov_q = tf.matrix_diag_part(Cov_p)  # n_samples (x latent_dim) x (T-1)
+
+        _LinvK = tf.tile(LinvK[:, None, :, :], [1, self.latent_dim, 1, 1]) if shared_kern_and_Z else LinvK
+        # n_samples x (T-1) x latent_dim:
+        KinvKu = tf.transpose(tf.matmul(_LinvK, U_tr, transpose_a=True)[..., 0], [0, 2, 1])
+        mu_diff = F_tr - mean_fn_X - KinvKu  # n_samples x (T-1) x latent_dim
+
+        if shared_kern_and_Z:
+            # n_samples x latent_dim:
+            mahalanobis_p = tf.reduce_sum(tf.linalg.solve(Cov_p, mu_diff) * mu_diff, -2)
+            mahalanobis_q = tf.reduce_sum(tf.square(mu_diff) / Cov_q[:, :, None], -2)
+            Cov_p = Cov_p[:, None, :, :]  # n_samples x 1 x (T-1) x (T-1)
+            Cov_q = Cov_q[:, None, :]  # n_samples x 1 x (T-1)
+        else:
+            # n_samples x latent_dim x (T-1):
+            mahalanobis_p = tf.linalg.solve(Cov_p, tf.transpose(mu_diff, [0, 2, 1])[..., None])[..., 0]
+            # n_samples x latent_dim:
+            mahalanobis_p = tf.einsum('ijk,ikj->ij', mahalanobis_p, mu_diff)
+            mahalanobis_q = tf.reduce_sum(tf.square(mu_diff) / tf.transpose(Cov_q, [0, 2, 1]), -2)
+
+        log_p = - 0.5 * (tf.linalg.logdet(Cov_p) + mahalanobis_p)  # n_samples x latent_dim
+        log_q = - 0.5 * (tf.reduce_sum(tf.log(tf.abs(Cov_q)), -1) + mahalanobis_q)  # n_samples x latent_dim
+        return tf.reduce_sum(log_q - log_p, -1)  # n_samples
+
+    @params_as_tensors
     def _build_linear_time_q_sample(self, return_f_moments=False, return_x_cov_chols=False,
-                                    sample_f=False, sample_u=True, return_u=False,
+                                    sample_f=False, return_f=False, sample_u=True, return_u=False,
+                                    compute_KL_F=False, return_Lm=False,
                                     T=None, inputs=None, qx1_mu=None, qx1_cov_chol=None, x1_samples=None,
                                     As=None, bs=None, S_chols=None, Lm=None):
         T = self.T if T is None else T
@@ -295,11 +357,22 @@ class GPSSM(gp.models.Model):
 
         if sample_f: white_samples_F = white_samples.sample(T - 1, seed=self.seed)
 
+        shared_kern = isinstance(self.kern, mk.SharedIndependentMok)
+        shared_kern_and_Z = Lm.shape.ndims == 2 or (shared_kern and isinstance(self.Z, mf.SharedIndependentMof))
+        if compute_KL_F:
+            assert sample_f and sample_u
+            Unwhitened_U = tf.matmul(tf.tile(Lm[None, ...], [self.latent_dim, 1, 1]) if shared_kern_and_Z else Lm,
+                                     U_samples)
+            U_un_tr = tf.transpose(Unwhitened_U, [2, 0, 1])  # n_samples x latent_dim x M
+            KL_F = tf.TensorArray(size=T - 1, dtype=gps.float_type, clear_after_read=False,
+                                  infer_shape=False, element_shape=(n_samples))
+
         def _loop_body(*args):
             t, X = args[:2]
             if sample_f: F = args[2]
-            if return_f_moments: f_mus, f_vars = args[-3:-1] if return_x_cov_chols else args[-2:]
-            if return_x_cov_chols: x_cov_chols = args[-1]
+            if return_f_moments: f_mus, f_vars = args[3:5] if sample_f else args[2:4]
+            if return_x_cov_chols: x_cov_chols = args[-2] if compute_KL_F else args[-1]
+            if compute_KL_F: KL_F = args[-1]
 
             x_t = X.read(t)  # n_samples x latent_dim
             if inputs is not None:
@@ -345,17 +418,68 @@ class GPSSM(gp.models.Model):
                 f_mus, f_vars = f_mus.write(t, f_mu), f_vars.write(t, f_var)
             if return_x_cov_chols:
                 x_cov_chols = x_cov_chols.write(t, x_cov_chol)
+            if compute_KL_F:
+                X_to_tp1 = tf.transpose(X.gather(tf.range(t + 1)), [1, 0, 2])  # n_samples x (t+1) x latent_dim
+                if inputs is not None:
+                    X_to_tp1 = tf.concat([X_to_tp1, tf.tile(inputs[:t + 1][None, :, :], [n_samples, 1, 1])], -1)
+                F_to_t = tf.transpose(F.gather(tf.range(t)), [1, 2, 0])  # n_samples x latent_dim x t
+                mean_fn_X = self.mean_fn(
+                    tf.reshape(X_to_tp1, [-1, self.latent_dim + self.input_dim])[:, :n_mean_inputs])
+                mean_fn_X = tf.reshape(mean_fn_X, [n_samples, t + 1, self.latent_dim])  # n_samples x (t+1) x latent_dim
+                mean_fn_X_to_t = tf.transpose(mean_fn_X[:, :-1], [0, 2, 1])  # n_samples x latent_dim x t
+                mean_fn_x_t = mean_fn_X[:, -1]  # n_samples x latent_dim
+
+                K_fn = lambda x: self.kern.kern.K(x) if shared_kern else lambda x: self.kern.K(x, full_output_cov=False)
+                Kxx = tf.map_fn(K_fn, X_to_tp1)  # n_samples x (latent_dim x) (t+1) x (t+1)
+
+                # (latent_dim x) M x n_samples*(t+1):
+                Kzx = Kuf(self.Z, self.kern, tf.reshape(X_to_tp1, [-1, self.latent_dim + self.input_dim]))
+                Kzx_shape = [self.n_ind_pts, n_samples, t + 1]
+                Kzx = tf.reshape(Kzx, Kzx_shape if shared_kern_and_Z else [self.latent_dim] + Kzx_shape)
+                # n_samples x (latent_dim x) M x (t+1):
+                Kzx = tf.transpose(Kzx, [1, 0, 2] if shared_kern_and_Z else [2, 0, 1, 3])
+
+                _Kxx = tf.tile(Kxx[:, None, :, :], [1, self.latent_dim, 1, 1]) \
+                    if (shared_kern and not shared_kern_and_Z) else Kxx
+
+                _Kzz = tf.tile(self.Kzz[None, ...], [n_samples, 1, 1] if shared_kern_and_Z else [n_samples, 1, 1, 1])
+                Kzx_dperm = [0, 2, 1] if shared_kern_and_Z else [0, 1, 3, 2]
+                Kxz_xz = tf.concat([
+                    tf.concat([_Kxx[..., :-1, :-1], tf.transpose(Kzx[..., :, :-1], Kzx_dperm)], -1),
+                    tf.concat([Kzx[..., :, :-1], _Kzz], -1)], -2)  # n_samples x (latent_dim x) (t + M) x (t + M)
+                # n_samples x (latent_dim x) (t + M) x 1:
+                Kxz_xtp1 = tf.concat([_Kxx[..., :-1, -1:], Kzx[..., :, -1:]], -2)
+                Kxtp1_xtp1 = Kxx[..., -1, -1]  # n_samples (x latent_dim)
+
+                KinvK_p = tf.linalg.solve(Kxz_xz, Kxz_xtp1)[..., 0]  # n_samples x (latent_dim x) (t + M)
+                var_p = tf.abs(Kxtp1_xtp1 - tf.reduce_sum(KinvK_p * Kxz_xtp1[..., 0], -1))  # n_samples (x latent_dim)
+                F_and_U = tf.concat([F_to_t - mean_fn_X_to_t, U_un_tr], -1) # n_samples x latent_dim x (t + M)
+                mu_p = tf.reduce_sum(F_and_U * (KinvK_p[:, None, :] if shared_kern_and_Z else KinvK_p), -1)
+                mu_p += mean_fn_x_t  # n_samples x latent_dim
+                KinvK_q = tf.linalg.solve(_Kzz, Kzx[..., :, -1:])[..., 0]  # n_samples x (latent_dim x) M
+                var_q = tf.abs(Kxtp1_xtp1 - tf.reduce_sum(KinvK_q * Kzx[..., :, -1], -1))  # n_samples (x latent_dim)
+                mu_q = tf.reduce_sum(U_un_tr * (KinvK_q[:, None, :] if shared_kern_and_Z else KinvK_q), -1)
+                mu_q += mean_fn_x_t  # n_samples x latent_dim
+                if shared_kern_and_Z:
+                    var_p = var_p[:, None]  # n_samples x 1
+                    var_q = var_q[:, None]  # n_samples x 1
+                log_p = - 0.5 * (tf.log(var_p) + tf.square(f_t - mu_p) / var_p)  # n_samples x latent_dim
+                log_q = - 0.5 * (tf.log(var_q) + tf.square(f_t - mu_q) / var_q)  # n_samples x latent_dim
+                KL_f_t = tf.reduce_sum(log_q - log_p, -1)  # n_samples
+                KL_F = KL_F.write(t, KL_f_t)
 
             ret_values = [t + 1, X]
             if sample_f: ret_values += [F]
             if return_f_moments: ret_values += [f_mus, f_vars]
             if return_x_cov_chols: ret_values += [x_cov_chols]
+            if compute_KL_F: ret_values += [KL_F]
             return ret_values
 
         _loop_vars = [0, X_samples]
         if sample_f: _loop_vars += [F_samples]
         if return_f_moments: _loop_vars += [f_mus, f_vars]
         if return_x_cov_chols: _loop_vars += [x_cov_chols]
+        if compute_KL_F: _loop_vars += [KL_F]
 
         result = tf.while_loop(
             cond=lambda t, *args: t < (T - 1),
@@ -365,7 +489,9 @@ class GPSSM(gp.models.Model):
             parallel_iterations=self.parallel_iterations)
 
         ret_values = tuple(r.stack() for r in result[1:])
+        if sample_f and not return_f: ret_values = ret_values[:1] + ret_values[2:]
         if sample_u and return_u: ret_values += (U_samples,)
+        if return_Lm: ret_values += (Lm,)
         return ret_values
 
     @params_as_tensors
