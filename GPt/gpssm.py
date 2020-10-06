@@ -463,9 +463,9 @@ class GPSSM(gp.models.Model):
                 if shared_kern_and_Z:
                     var_p = var_p[:, None]  # n_samples x 1
                     var_q = var_q[:, None]  # n_samples x 1
-                log_p = - 0.5 * (tf.log(var_p) + tf.square(f_t - mu_p) / var_p)  # n_samples x latent_dim
-                log_q = - 0.5 * (tf.log(var_q) + tf.square(f_t - mu_q) / var_q)  # n_samples x latent_dim
-                KL_f_t = tf.reduce_sum(log_q - log_p, -1)  # n_samples
+                # n_samples x latent_dim:
+                KL_f_t = 0.5 * ((var_q / var_p) + (tf.square(mu_p - mu_q) / var_p) - 1. + tf.log(var_p) - tf.log(var_q))
+                KL_f_t = tf.reduce_sum(KL_f_t, -1)  # n_samples
                 KL_F = KL_F.write(t, KL_f_t)
 
             ret_values = [t + 1, X]
