@@ -14,12 +14,10 @@
 
 
 import numpy as np
-import pytest
 from numpy.testing import assert_allclose
 import tensorflow as tf
 from tensorflow_probability import distributions as tfd
 import gpflow as gp
-from gpflow import params_as_tensors_for
 from gpflow.test_util import GPflowTestCase
 from gpflow import mean_functions as mean_fns
 from gpflow.conditionals import conditional, Kuu, Kuf

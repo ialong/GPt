@@ -21,10 +21,9 @@ import tensorflow as tf
 import gpflow as gp
 from gpflow.test_util import GPflowTestCase
 from gpflow import mean_functions as mean_fns
-from gpflow.conditionals import conditional, Kuu, Kuf
+from gpflow.conditionals import conditional
 from GPt.gpssm import GPSSM
-from GPt.emissions import GaussianEmissions
-from GPt.KL import KL, KL_samples
+from GPt.KL import KL_samples
 
 
 class TransitionKLsTest(GPflowTestCase):
