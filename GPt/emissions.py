@@ -16,8 +16,9 @@
 import numpy as np
 import tensorflow as tf
 import gpflow as gp
-from gpflow import settings, params_as_tensors, autoflow
+from gpflow import settings, params_as_tensors, autoflow, kullback_leiblers
 from gpflow.logdensities import mvn_logp
+from gpflow import mean_functions as mean_fns
 
 
 class GaussianEmissions(gp.likelihoods.Likelihood):
@@ -108,6 +109,68 @@ class GaussianEmissions(gp.likelihoods.Likelihood):
     @autoflow((settings.float_type,), (settings.float_type,), (settings.float_type,))
     def compute_variational_expectations(self, Xmu, Xcov, Y):
         return self.variational_expectations(Xmu, Xcov, Y)
+
+
+class SingleGPEmissions(gp.likelihoods.Likelihood):
+    def __init__(self, latent_dim, Z, mean_function=None, kern=None, likelihood=None, name=None):
+        super().__init__(name=name)
+        self.latent_dim = latent_dim
+        self.obs_dim = 1
+        self.n_ind_pts = Z.shape[0]
+
+        self.mean_function = mean_function or mean_fns.Zero(output_dim=self.obs_dim)
+        self.kern = kern or gp.kernels.RBF(self.latent_dim, ARD=True)
+        self.likelihood = likelihood or gp.likelihoods.Gaussian()
+        self.Z = gp.features.InducingPoints(Z)
+        self.Umu = gp.Param(np.zeros((self.n_ind_pts, self.latent_dim)))  # (Lm^-1)(Umu - m(Z))
+        self.Ucov_chol = gp.Param(np.tile(np.eye(self.n_ind_pts)[None, ...], [self.obs_dim, 1, 1]),
+                                  transform=gp.transforms.LowerTriangular(
+                                      self.n_ind_pts, num_matrices=self.obs_dim, squeeze=False))  # (Lm^-1)Lu
+
+    @params_as_tensors
+    def conditional(self, X, add_observation_noise=True):
+        """
+        :param X: latent state (... x E)
+        :return: mu(Y)|X (... x D) and var(Y)|X (... x D)
+        """
+        in_shape = tf.shape(X)
+        out_shape = tf.concat([in_shape[:-1], [self.obs_dim]])
+        _X = tf.reshape(X, [-1, self.latent_dim])
+        mu, var = gp.conditionals.conditional(_X, self.Z, self.kern, self.Umu, q_sqrt=self.Ucov_chol,
+                                              full_cov=False, white=True, full_output_cov=False)
+        mu += self.mean_function(_X)
+        if add_observation_noise:
+            var += self.likelihood.variance
+        return tf.reshape(mu, out_shape), tf.reshape(var, out_shape)
+
+
+    @params_as_tensors
+    def conditional_mean(self, X):
+        """
+        :param X: latent state (... x E)
+        :return: mu(Y)|X (... x D)
+        """
+        return self.conditional(X)[0]
+
+    @params_as_tensors
+    def conditional_variance(self, X):
+        """
+        :param X: latent state (... x E)
+        :return: var(Y)|X (... x D)
+        """
+        return self.conditional(X)[1]
+
+    @params_as_tensors
+    def logp(self, X, Y):
+        """
+        :param X: latent state (n_samples x T x E)
+        :param Y: observations (n_samples x T x D)
+        :return: variational lower bound on \log P(Y|X) (n_samples x T)
+        """
+        KL = kullback_leiblers.gauss_kl(self.Umu, self.Ucov_chol, None)  # ()
+        fmean, fvar = self.conditional(X, add_observation_noise=False)  # (n_samples x T x D) and (n_samples x T x D)
+        var_exp = tf.reduce_sum(self.likelihood.variational_expectations(fmean, fvar, Y), -1)  # (n_samples x T)
+        return var_exp - KL / tf.cast(tf.shape(X)[1], gp.settings.float_type)
 
 
 class PolarToCartesianEmissions(GaussianEmissions):
